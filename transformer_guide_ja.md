@@ -116,3 +116,10 @@ GPTは次の流れで動きます。
 
 `nanoGPT`は、Transformer/GPTの仕組みを**最短で「実装として」理解する教材**として優秀です。  
 まずは小規模設定で学習→生成を体験し、`model.py`の対応箇所を追うことで、BERT/GPTの用語知識を実装理解に変換できます。
+
+---
+
+## 10. 順番学習用の具体教材
+
+このガイドの流れに沿って、実際に手を動かす順番付き教材を用意しました。  
+`/home/runner/work/nanoGPT/nanoGPT/learning_materials_ja/README.md` から順に進めてください。
