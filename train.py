@@ -31,6 +31,8 @@ from model import GPTConfig, GPT
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
+# 学習メモ: ここでは「I/O・データ・モデル・最適化・実行環境」の初期値をまとめて定義し、
+# 後段で configurator.py により上書き可能にしている。
 # I/O
 out_dir = 'out'
 eval_interval = 2000
@@ -79,6 +81,8 @@ config = {k: globals()[k] for k in config_keys} # will be useful for logging
 # -----------------------------------------------------------------------------
 
 # various inits, derived attributes, I/O setup
+# 学習メモ: DDP 実行時は rank ごとに役割と seed を分け、gradient_accumulation_steps を
+# world size に合わせて調整し、実効バッチサイズの整合をとる。
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
 if ddp:
     init_process_group(backend=backend)
@@ -112,6 +116,8 @@ ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torc
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
 # poor man's data loader
+# 学習メモ: x は長さ block_size の入力列、y は 1 トークン右にずらした教師データ。
+# つまり目的は一貫して「次トークン予測」になっている。
 data_dir = os.path.join('data', dataset)
 def get_batch(split):
     # We recreate np.memmap every batch to avoid a memory leak, as per
@@ -144,6 +150,8 @@ if os.path.exists(meta_path):
     print(f"found vocab_size = {meta_vocab_size} (inside {meta_path})")
 
 # model init
+# 学習メモ: init_from は scratch / resume / gpt2* の3系統。
+# resume では互換性のため一部 model_args をチェックポイント側に揃える。
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
                   bias=bias, vocab_size=None, dropout=dropout) # start with model_args from command line
 if init_from == 'scratch':
@@ -193,6 +201,7 @@ if block_size < model.config.block_size:
 model.to(device)
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
+# 学習メモ: float16 のときだけ GradScaler を有効化し、混合精度学習の数値安定性を確保する。
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
 # optimizer
@@ -228,6 +237,7 @@ def estimate_loss():
     return out
 
 # learning rate decay scheduler (cosine with warmup)
+# 学習メモ: 学習率は warmup -> cosine decay -> min_lr 固定 の3区間で推移する。
 def get_lr(it):
     # 1) linear warmup for warmup_iters steps
     if it < warmup_iters:
@@ -247,6 +257,7 @@ if wandb_log and master_process:
     wandb.init(project=wandb_project, name=wandb_run_name, config=config)
 
 # training loop
+# 学習メモ: ループの大枠は「lr更新 -> 定期評価/保存 -> 勾配蓄積付き学習 -> ログ -> 終了判定」。
 X, Y = get_batch('train') # fetch the very first batch
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
@@ -289,9 +300,12 @@ while True:
 
     # forward backward update, with optional gradient accumulation to simulate larger batch size
     # and using the GradScaler if data type is float16
+    # 学習メモ: micro step ごとに loss を accumulation 回数で割って逆伝播し、
+    # 最後に optimizer.step() することで大きな実効バッチを再現する。
     for micro_step in range(gradient_accumulation_steps):
         if ddp:
             # in DDP training we only need to sync gradients at the last micro step.
+            # 学習メモ: 通信同期を最後だけにすることで、勾配蓄積中の通信コストを削減する。
             # the official way to do this is with model.no_sync() context manager, but
             # I really dislike that this bloats the code and forces us to repeat code
             # looking at the source of that context manager, it just toggles this variable
